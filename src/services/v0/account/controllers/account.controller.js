@@ -18,7 +18,9 @@ export const getBalance = async (req, res) => {
             return res.status(422).json({ message: 'Phone number or password not provided' })
         }
 
-        const browser = await puppeteer.launch()
+        const browser = await puppeteer.launch({
+            args: ['--no-sandbox', '--disabled-setuid-sandbox']
+        })
         const page = await browser.newPage()
 
         await page.goto(CAMTEL_LOGIN_URL)
@@ -68,6 +70,7 @@ export const getBalance = async (req, res) => {
 
         return res.json({ balance })
     } catch (error) {
+        console.log('ERROR', error)
         return res.status(422).json(error)
     }
 }
