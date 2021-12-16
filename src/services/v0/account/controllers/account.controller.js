@@ -5,8 +5,10 @@ import { getDigitsFromCaptchaImage } from '../../captcha/captcha.service.js'
 const CAMTEL_LOGIN_URL = 'http://myxtremnet.cm/web/index!login.action'
 const CAMTEL_FAILED_LOGIN_URL = 'http://myxtremnet.cm/web/user!gotowt.action'
 const CAMTEL_BILLING_INFO_URL = 'http://myxtremnet.cm/web/billing-query!accountBalance.action'
+const CAMTEL_PREPAID_BALANCE_SUBACCOUNT = 'PrepaidBalanceSubaccount'
 const CAMTEL_OFFERS_URL = 'http://myxtremnet.cm/web/offer-subscription!getAvailableOffers.action?serviceNo='
 const CAMTEL_SUBSCRIBED_OFFER_URL = 'http://myxtremnet.cm/web/offer-subscription!subscribedOffer.action'
+const CAMTEL_SUBSCRIBE_SUCCESS_MESSAGES = ['Subscribe successfully!', 'Souscription effectuée avec succès!']
 
 // Get account balance
 export const getBalance = async (req, res) => {
@@ -61,14 +63,35 @@ export const getBalance = async (req, res) => {
 
         await page.goto(CAMTEL_BILLING_INFO_URL)
 
+        let balance = null
+
         const accountInfoTable = await page.$('#accountInformation')
-        const balanceEl = await accountInfoTable.$('tbody tr:nth-child(3) td:nth-child(2)')
-        const balanceObj = await balanceEl.getProperty('innerText')
-        const balance = await balanceObj.jsonValue()
+        const balanceTRs = await accountInfoTable.$$('tbody tr')
+
+        if (!balanceTRs.length) {
+            return res.status(404).json({ message: 'Balance table rows not found' })
+        }
+
+        for (const balanceTR of balanceTRs) {
+            const balanceTDEl = await balanceTR.$('td:first-child')
+            
+            if (!balanceTDEl) {
+                continue
+            }
+
+            const balanceTDObj = await balanceTDEl.getProperty('innerText')
+            const balanceTD = await balanceTDObj.jsonValue()
+
+            if (balanceTD === CAMTEL_PREPAID_BALANCE_SUBACCOUNT) {
+                const balanceEl = await balanceTR.$('td:nth-child(2)')
+                const balanceObj = await balanceEl.getProperty('innerText')
+                balance = await balanceObj.jsonValue()
+            }
+        }
 
         await browser.close()
 
-        return res.json({ balance })
+        return balance ? res.json({ balance }) : res.status(404).json({ message: 'An error occurred when trying to retrieve balance' })
     } catch (error) {
         console.log('ERROR', error)
         return res.status(422).json(error)
@@ -145,16 +168,27 @@ export const offerSubscription = async (req, res) => {
 
                 // Listen for alert event before subscribing
                 page.on('dialog', async dialog => {
+                    console.log('DIALOG OPENED')
                     await dialog.accept()
+                    console.log('SUBSCRIBED!')
                 })
 
                 await page.click('#regbutton')
 
-                await page.waitForNavigation()
+                await page.waitForNavigation({ timeout: 0 })
 
-                if (page.url().startsWith(CAMTEL_SUBSCRIBED_OFFER_URL)) {
-                    return res.status(400).json({ message: 'Insufficient funds' })
+                const table = await page.$('.f_lin25')
+
+                const td = await table.$('tbody tr:nth-child(1) td')
+                const tdObj = await td.getProperty('innerText')
+                const response = await tdObj.jsonValue()
+                console.log('RESPONSE', response)
+
+                if (!CAMTEL_SUBSCRIBE_SUCCESS_MESSAGES.includes('response')) {
+                    return res.status(400).json({ message: response })
                 }
+
+                return res.json({ message: response })
             }
         }
 
