@@ -28,20 +28,8 @@ export const getBalance = async (req, res) => {
         await page.goto(CAMTEL_LOGIN_URL)
         
         const loginForm = await page.$('#formLogin')
-        const tables = await loginForm.$$('table.l_tb')
-
-        if (!tables.length) {
-            return res.status(404).json({ message: 'Login form table element not found' })
-        }
-
-        const table = tables[0]
-        const images = await table.$$('img')
-
-        if (!images.length) {
-            return res.status(404).json({ message: 'Login form image element not found' })
-        }
-
-        const img = images[0]
+        const table = await loginForm.$('table.l_tb')
+        const img = await table.$('#img1')
         await img.screenshot({ path: 'image.png' })
 
         const digits = await getDigitsFromCaptchaImage('image.png')
@@ -63,7 +51,7 @@ export const getBalance = async (req, res) => {
 
         await page.goto(CAMTEL_BILLING_INFO_URL)
 
-        let balance = null
+        const balanceDetails = []
 
         const accountInfoTable = await page.$('#accountInformation')
         const balanceTRs = await accountInfoTable.$$('tbody tr')
@@ -82,16 +70,26 @@ export const getBalance = async (req, res) => {
             const balanceTDObj = await balanceTDEl.getProperty('innerText')
             const balanceTD = await balanceTDObj.jsonValue()
 
-            if (balanceTD === CAMTEL_PREPAID_BALANCE_SUBACCOUNT) {
-                const balanceEl = await balanceTR.$('td:nth-child(2)')
-                const balanceObj = await balanceEl.getProperty('innerText')
-                balance = await balanceObj.jsonValue()
-            }
+            const balanceEl = await balanceTR.$('td:nth-child(2)')
+            const balanceObj = await balanceEl.getProperty('innerText')
+            const balance = await balanceObj.jsonValue()
+
+            const effectiveTimeEl = await balanceTR.$('td:nth-child(3)')
+            const effectiveTimeObj = await effectiveTimeEl.getProperty('innerText')
+            const effectiveTime = await effectiveTimeObj.jsonValue()
+
+            const expiryTimeEl = await balanceTR.$('td:nth-child(4)')
+            const expiryTimeObj = await expiryTimeEl.getProperty('innerText')
+            const expiryTime = await expiryTimeObj.jsonValue()
+
+            balanceDetails.push({ type: balanceTD, balance, effectiveTime, expiryTime })
         }
 
         await browser.close()
 
-        return balance ? res.json({ balance }) : res.status(404).json({ message: 'An error occurred when trying to retrieve balance' })
+        return balanceDetails.length ?
+            res.json({ balanceDetails }) :
+            res.status(404).json({ message: 'An error occurred when trying to retrieve balance info' })
     } catch (error) {
         console.log('ERROR', error)
         return res.status(422).json(error)
@@ -108,26 +106,17 @@ export const offerSubscription = async (req, res) => {
             return res.status(422).json({ message: 'Phone number or password not provided' })
         }
 
-        const browser = await puppeteer.launch()
+        const browser = await puppeteer.launch({
+            // headless: false,
+            args: ['--no-sandbox', '--disabled-setuid-sandbox']
+        })
         const page = await browser.newPage()
 
         await page.goto(CAMTEL_LOGIN_URL)
-        
+
         const loginForm = await page.$('#formLogin')
-        const tables = await loginForm.$$('table.l_tb')
-
-        if (!tables.length) {
-            return res.status(404).json({ message: 'Login form table element not found' })
-        }
-
-        const table = tables[0]
-        const images = await table.$$('img')
-
-        if (!images.length) {
-            return res.status(404).json({ message: 'Login form image element not found' })
-        }
-
-        const img = images[0]
+        const table = await loginForm.$('table.l_tb')
+        const img = await table.$('#img1')
         await img.screenshot({ path: 'image.png' })
 
         const digits = await getDigitsFromCaptchaImage('image.png')
@@ -168,25 +157,30 @@ export const offerSubscription = async (req, res) => {
 
                 // Listen for alert event before subscribing
                 page.on('dialog', async dialog => {
-                    console.log('DIALOG OPENED')
                     await dialog.accept()
-                    console.log('SUBSCRIBED!')
                 })
 
                 await page.click('#regbutton')
+                console.log('NEW PAGE URL - BEFORE', page.url())
 
-                await page.waitForNavigation({ timeout: 0 })
+                // await page.waitForNavigation({ timeout: 0 })
+                await page.waitForNavigation()
+                console.log('NEW PAGE URL - AFTER', page.url())
 
-                const table = await page.$('.f_lin25')
+                const responseTable = await page.$('.f_lin25')
 
-                const td = await table.$('tbody tr:nth-child(1) td')
+                const td = await responseTable.$('tbody tr:nth-child(1) td')
                 const tdObj = await td.getProperty('innerText')
                 const response = await tdObj.jsonValue()
                 console.log('RESPONSE', response)
 
-                if (!CAMTEL_SUBSCRIBE_SUCCESS_MESSAGES.includes('response')) {
+                if (!CAMTEL_SUBSCRIBE_SUCCESS_MESSAGES.includes(response)) {
+                    await browser.close()
+
                     return res.status(400).json({ message: response })
                 }
+
+                await browser.close()
 
                 return res.json({ message: response })
             }
@@ -194,7 +188,7 @@ export const offerSubscription = async (req, res) => {
 
         await browser.close()
 
-        return res.json({ message: 'Subscription successful' })
+        return res.status(500).json({ message: 'Something unexpected happened' })
     } catch (error) {
         console.log('ERROR', error)
         return res.status(422).json(error)
