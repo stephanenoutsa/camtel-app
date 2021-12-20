@@ -1,14 +1,17 @@
+import { mkdir, unlink } from 'fs'
+
 import puppeteer from 'puppeteer'
 
 import { getDigitsFromCaptchaImage } from '../../captcha/captcha.service.js'
+import offers from '../../camtel-offers.js'
 
 const CAMTEL_LOGIN_URL = 'http://myxtremnet.cm/web/index!login.action'
 const CAMTEL_FAILED_LOGIN_URL = 'http://myxtremnet.cm/web/user!gotowt.action'
 const CAMTEL_BILLING_INFO_URL = 'http://myxtremnet.cm/web/billing-query!accountBalance.action'
 const CAMTEL_PREPAID_BALANCE_SUBACCOUNT = 'PrepaidBalanceSubaccount'
 const CAMTEL_OFFERS_URL = 'http://myxtremnet.cm/web/offer-subscription!getAvailableOffers.action?serviceNo='
-const CAMTEL_SUBSCRIBED_OFFER_URL = 'http://myxtremnet.cm/web/offer-subscription!subscribedOffer.action'
 const CAMTEL_SUBSCRIBE_SUCCESS_MESSAGES = ['Subscribe successfully!', 'Souscription effectuée avec succès!']
+const CAMTEL_SUBSCRIBE_SYSTEM_ABNORMALITIES = 'System abnormalities,please try later!'
 
 // Get account balance
 export const getBalance = async (req, res) => {
@@ -30,10 +33,28 @@ export const getBalance = async (req, res) => {
         const loginForm = await page.$('#formLogin')
         const table = await loginForm.$('table.l_tb')
         const img = await table.$('#img1')
-        await img.screenshot({ path: 'image.png' })
 
-        const digits = await getDigitsFromCaptchaImage('image.png')
+        const today = new Date().toISOString().substring(0, 10)
+        const timestamp = Date.now()
+        const dir = `images/${today}`
+        mkdir(dir, { recursive: true }, err => {
+            if (err) throw err
+
+            console.log('Directory created successfully')
+        })
+        const path = `${dir}/${timestamp}.png`
+
+        await img.screenshot({ path })
+
+        const digits = await getDigitsFromCaptchaImage(path)
         console.log('DIGITS', digits)
+
+        // Remove file from filesystem
+        unlink(path, err => {
+            if (err) throw err
+
+            console.log('File was deleted')
+        })
 
         await page.type('#userVO_loginName1', phone)
         await page.type('#userVO_userPassword', password)
@@ -117,10 +138,28 @@ export const offerSubscription = async (req, res) => {
         const loginForm = await page.$('#formLogin')
         const table = await loginForm.$('table.l_tb')
         const img = await table.$('#img1')
-        await img.screenshot({ path: 'image.png' })
 
-        const digits = await getDigitsFromCaptchaImage('image.png')
+        const today = new Date().toISOString().substring(0, 10)
+        const timestamp = Date.now()
+        const dir = `images/${today}`
+        mkdir(dir, { recursive: true }, err => {
+            if (err) throw err
+
+            console.log('Directory created successfully')
+        })
+        const path = `${dir}/${timestamp}.png`
+
+        await img.screenshot({ path })
+
+        const digits = await getDigitsFromCaptchaImage(path)
         console.log('DIGITS', digits)
+
+        // Remove file from filesystem
+        unlink(path, err => {
+            if (err) throw err
+
+            console.log('File was deleted')
+        })
 
         await page.type('#userVO_loginName1', phone)
         await page.type('#userVO_userPassword', password)
@@ -134,6 +173,42 @@ export const offerSubscription = async (req, res) => {
 
         if (pageUrl === CAMTEL_FAILED_LOGIN_URL) {
             return res.status(400).json({ message: 'Login attempt failed. Please try again' })
+        }
+
+        await page.goto(CAMTEL_BILLING_INFO_URL)
+
+        const accountInfoTable = await page.$('#accountInformation')
+        const balanceTRs = await accountInfoTable.$$('tbody tr')
+
+        if (!balanceTRs.length) {
+            return res.status(404).json({ message: 'Balance table rows not found' })
+        }
+
+        let balance = null
+
+        for (const balanceTR of balanceTRs) {
+            const balanceTDEl = await balanceTR.$('td:first-child')
+            
+            if (!balanceTDEl) {
+                continue
+            }
+
+            const balanceTDObj = await balanceTDEl.getProperty('innerText')
+            const balanceTD = await balanceTDObj.jsonValue()
+
+            if (balanceTD === CAMTEL_PREPAID_BALANCE_SUBACCOUNT) {
+                const balanceEl = await balanceTR.$('td:nth-child(2)')
+                const balanceObj = await balanceEl.getProperty('innerText')
+                const balanceString = await balanceObj.jsonValue()
+                const balanceArray = balanceString.split('.')
+                balance = balanceArray.length ? parseInt(balanceArray[0]) : 0
+            }
+        }
+
+        const requestedOffer = offers.find(o => o.name === offer)
+
+        if (requestedOffer && (balance < requestedOffer.price)) {
+            return res.status(422).json({ status: 'INSUFFICIENT_BALANCE', message: 'Insufficient balance' })
         }
 
         await page.goto(`${CAMTEL_OFFERS_URL}${phone}`)
@@ -177,12 +252,17 @@ export const offerSubscription = async (req, res) => {
                 if (!CAMTEL_SUBSCRIBE_SUCCESS_MESSAGES.includes(response)) {
                     await browser.close()
 
-                    return res.status(400).json({ message: response })
+                    const status = response === CAMTEL_SUBSCRIBE_SYSTEM_ABNORMALITIES ?
+                        'SYSTEM_ABNORMALITIES' :
+                        'FAILED'
+                    // TODO: Log error response
+
+                    return res.status(422).json({ status, message: response })
                 }
 
                 await browser.close()
 
-                return res.json({ message: response })
+                return res.json({ status: 'SUCCESSFUL', message: response })
             }
         }
 
@@ -191,6 +271,6 @@ export const offerSubscription = async (req, res) => {
         return res.status(500).json({ message: 'Something unexpected happened' })
     } catch (error) {
         console.log('ERROR', error)
-        return res.status(422).json(error)
+        return res.status(422).json({ status: 'FAILED', message: error })
     }
 }
